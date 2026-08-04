@@ -62,16 +62,47 @@ def privacy_policy():
         with third parties.
         </p>
 
-        <h2>Data Security</h2>
-        <p>
-        We take reasonable steps to protect the information handled
-        by EduBot.
-        </p>
-
         <h2>Contact</h2>
         <p>
-        For questions about this Privacy Policy, contact:
-        your-zedex_editingz@gmail.com
+        Email: zedex_editingz@gmail.com
+        </p>
+
+    </body>
+    </html>
+    """
+
+
+# -----------------------------
+# User Data Deletion
+# -----------------------------
+@app.route("/data-deletion")
+def data_deletion():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>EduBot User Data Deletion</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+    </head>
+
+    <body>
+        <h1>User Data Deletion</h1>
+
+        <p>
+        EduBot respects your right to request deletion of your data.
+        </p>
+
+        <p>
+        If you want your Instagram data deleted, please contact us
+        with your Instagram username.
+        </p>
+
+        <p>
+        We will review your request and delete applicable data.
+        </p>
+
+        <p>
+        Email: zedex_editingz@gmail.com
         </p>
 
     </body>
