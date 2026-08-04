@@ -1,4 +1,5 @@
 import os
+import requests
 from flask import Flask, request, jsonify
 from openai import OpenAI
 
@@ -33,39 +34,35 @@ def privacy_policy():
     <html>
     <head>
         <title>EduBot Privacy Policy</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
     </head>
-
     <body>
-        <h1>EduBot Privacy Policy</h1>
 
-        <p>
-        EduBot respects your privacy and is committed to protecting
-        your personal information.
-        </p>
+    <h1>EduBot Privacy Policy</h1>
 
-        <h2>Information We Use</h2>
-        <p>
-        EduBot uses Instagram messaging data only to provide
-        AI-powered homework assistance and replies.
-        </p>
+    <p>
+    EduBot respects your privacy and protects your personal information.
+    </p>
 
-        <h2>How We Use Information</h2>
-        <p>
-        Messages received by EduBot are used only to generate
-        helpful AI responses.
-        </p>
+    <h2>Information We Use</h2>
+    <p>
+    EduBot uses Instagram messaging data only to provide
+    AI-powered homework assistance and replies.
+    </p>
 
-        <h2>Data Sharing</h2>
-        <p>
-        We do not sell, rent, or share your personal information
-        with third parties.
-        </p>
+    <h2>Data Usage</h2>
+    <p>
+    Messages are used only to generate helpful AI responses.
+    </p>
 
-        <h2>Contact</h2>
-        <p>
-        Email: zedex_editingz@gmail.com
-        </p>
+    <h2>Data Sharing</h2>
+    <p>
+    We do not sell, rent, or share personal information with third parties.
+    </p>
+
+    <h2>Contact</h2>
+    <p>
+    Email: zedex_editingz@gmail.com
+    </p>
 
     </body>
     </html>
@@ -81,29 +78,27 @@ def data_deletion():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>EduBot User Data Deletion</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>EduBot Data Deletion</title>
     </head>
-
     <body>
-        <h1>User Data Deletion</h1>
 
-        <p>
-        EduBot respects your right to request deletion of your data.
-        </p>
+    <h1>User Data Deletion</h1>
 
-        <p>
-        If you want your Instagram data deleted, please contact us
-        with your Instagram username.
-        </p>
+    <p>
+    Users can request deletion of their data from EduBot.
+    </p>
 
-        <p>
-        We will review your request and delete applicable data.
-        </p>
+    <p>
+    Please contact us with your Instagram username.
+    </p>
 
-        <p>
-        Email: zedex_editingz@gmail.com
-        </p>
+    <p>
+    We will review your request and delete applicable data.
+    </p>
+
+    <p>
+    Email: zedex_editingz@gmail.com
+    </p>
 
     </body>
     </html>
@@ -115,6 +110,7 @@ def data_deletion():
 # -----------------------------
 @app.route("/webhook", methods=["GET"])
 def verify():
+
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
@@ -126,10 +122,41 @@ def verify():
 
 
 # -----------------------------
+# Send Instagram Reply
+# -----------------------------
+def send_instagram_message(recipient_id, message_text):
+
+    access_token = os.environ["INSTAGRAM_ACCESS_TOKEN"]
+
+    url = "https://graph.instagram.com/v23.0/me/messages"
+
+    payload = {
+        "recipient": {
+            "id": recipient_id
+        },
+        "message": {
+            "text": message_text
+        }
+    }
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+
+    response = requests.post(
+        url,
+        json=payload,
+        headers=headers
+    )
+
+    print("Instagram Reply:", response.text)
+    # -----------------------------
 # Receive Instagram Messages
 # -----------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
+
     try:
         data = request.get_json()
 
@@ -137,11 +164,52 @@ def webhook():
         print(data)
         print("======================================")
 
+        entry = data["entry"][0]
+        messaging = entry["messaging"][0]
+
+        sender_id = messaging["sender"]["id"]
+
+        user_message = (
+            messaging
+            .get("message", {})
+            .get("text", "")
+        )
+
+        if user_message:
+
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are EduBot, an AI homework tutor. "
+                            "Explain answers step by step using simple language."
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": user_message
+                    }
+                ],
+                temperature=0.5,
+                max_tokens=800
+            )
+
+            ai_reply = response.choices[0].message.content
+
+            send_instagram_message(
+                sender_id,
+                ai_reply
+            )
+
         return "EVENT_RECEIVED", 200
 
+
     except Exception as e:
-        print(e)
+        print("ERROR:", e)
         return "ERROR", 500
+
 
 
 # -----------------------------
@@ -149,13 +217,19 @@ def webhook():
 # -----------------------------
 @app.route("/ask", methods=["POST"])
 def ask():
+
     try:
+
         data = request.get_json()
 
         if not data or "question" not in data:
-            return jsonify({"error": "Question is required"}), 400
+            return jsonify({
+                "error": "Question is required"
+            }), 400
+
 
         question = data["question"]
+
 
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -176,16 +250,20 @@ def ask():
             max_tokens=800
         )
 
+
         return jsonify({
             "success": True,
             "answer": response.choices[0].message.content
         })
 
+
     except Exception as e:
+
         return jsonify({
             "success": False,
             "error": str(e)
         }), 500
+
 
 
 # -----------------------------
@@ -193,12 +271,19 @@ def ask():
 # -----------------------------
 @app.route("/auth/instagram/callback")
 def instagram_callback():
+
     return "Instagram login successful"
+
 
 
 # -----------------------------
 # Run Flask
 # -----------------------------
 if __name__ == "__main__":
+
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
