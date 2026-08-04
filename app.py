@@ -14,12 +14,69 @@ client = OpenAI(
 
 VERIFY_TOKEN = "edubot_verify"
 
+
 # -----------------------------
 # Home
 # -----------------------------
 @app.route("/")
 def home():
     return "EduBot is running successfully!"
+
+
+# -----------------------------
+# Privacy Policy
+# -----------------------------
+@app.route("/privacy-policy")
+def privacy_policy():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>EduBot Privacy Policy</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+    </head>
+
+    <body>
+        <h1>EduBot Privacy Policy</h1>
+
+        <p>
+        EduBot respects your privacy and is committed to protecting
+        your personal information.
+        </p>
+
+        <h2>Information We Use</h2>
+        <p>
+        EduBot uses Instagram messaging data only to provide
+        AI-powered homework assistance and replies.
+        </p>
+
+        <h2>How We Use Information</h2>
+        <p>
+        Messages received by EduBot are used only to generate
+        helpful AI responses.
+        </p>
+
+        <h2>Data Sharing</h2>
+        <p>
+        We do not sell, rent, or share your personal information
+        with third parties.
+        </p>
+
+        <h2>Data Security</h2>
+        <p>
+        We take reasonable steps to protect the information handled
+        by EduBot.
+        </p>
+
+        <h2>Contact</h2>
+        <p>
+        For questions about this Privacy Policy, contact:
+        your-email@example.com
+        </p>
+
+    </body>
+    </html>
+    """
 
 
 # -----------------------------
