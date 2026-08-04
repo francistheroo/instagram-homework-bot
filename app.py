@@ -71,7 +71,7 @@ def privacy_policy():
         <h2>Contact</h2>
         <p>
         For questions about this Privacy Policy, contact:
-        your-email@example.com
+        your-zedex_editingz@gmail.com
         </p>
 
     </body>
