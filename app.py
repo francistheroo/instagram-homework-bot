@@ -21,6 +21,7 @@ VERIFY_TOKEN = "edubot_verify"
 def home():
     return "EduBot is running successfully!"
 
+
 # -----------------------------
 # Meta Webhook Verification
 # -----------------------------
@@ -34,6 +35,7 @@ def verify():
         return challenge, 200
 
     return "Verification failed", 403
+
 
 # -----------------------------
 # Receive Instagram Messages
@@ -52,6 +54,7 @@ def webhook():
     except Exception as e:
         print(e)
         return "ERROR", 500
+
 
 # -----------------------------
 # AI Endpoint
@@ -95,6 +98,15 @@ def ask():
             "success": False,
             "error": str(e)
         }), 500
+
+
+# -----------------------------
+# Instagram Business Login Callback
+# -----------------------------
+@app.route("/auth/instagram/callback")
+def instagram_callback():
+    return "Instagram login successful"
+
 
 # -----------------------------
 # Run Flask
