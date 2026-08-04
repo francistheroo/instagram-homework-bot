@@ -4,16 +4,33 @@ from openai import OpenAI
 
 app = Flask(__name__)
 
-# Initialize Groq client
+# Groq Client
 client = OpenAI(
     api_key=os.environ["GROQ_API_KEY"],
     base_url="https://api.groq.com/openai/v1"
 )
 
+# Meta Webhook Verify Token
+VERIFY_TOKEN = "edubot_verify"
+
+# Home Route
 @app.route("/")
 def home():
     return "EduBot is running successfully!"
 
+# Meta Webhook Verification
+@app.route("/webhook", methods=["GET"])
+def verify():
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
+
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        return challenge, 200
+
+    return "Verification failed", 403
+
+# AI Test Route
 @app.route("/ask", methods=["POST"])
 def ask():
     try:
@@ -30,9 +47,8 @@ def ask():
                 {
                     "role": "system",
                     "content": (
-                        "You are EduBot, a friendly AI homework tutor. "
-                        "Explain answers step by step in simple language. "
-                        "If you don't know something, say so honestly."
+                        "You are EduBot, a helpful homework tutor. "
+                        "Explain answers step by step in simple language."
                     )
                 },
                 {
@@ -56,7 +72,6 @@ def ask():
             "success": False,
             "error": str(e)
         }), 500
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
