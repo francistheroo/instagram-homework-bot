@@ -2,6 +2,7 @@ import os
 import requests
 from flask import Flask, request, jsonify
 from openai import OpenAI
+from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 
@@ -10,10 +11,15 @@ app = Flask(__name__)
 # -----------------------------
 client = OpenAI(
     api_key=os.environ["GROQ_API_KEY"],
-    base_url="https://api.groq.com/openai/v1"
+    base_url="https://api.groq.com/openai/v1",
+    timeout=30.0,
+    max_retries=2
 )
 
 VERIFY_TOKEN = "edubot_verify"
+
+# Small background pool so Instagram gets a quick webhook response.
+executor = ThreadPoolExecutor(max_workers=4)
 
 
 # -----------------------------
@@ -24,9 +30,6 @@ def home():
     return "EduBot is running successfully!"
 
 
-# -----------------------------
-# Privacy Policy
-# -----------------------------
 @app.route("/privacy-policy")
 def privacy_policy():
     return """
@@ -61,7 +64,7 @@ def privacy_policy():
 
     <h2>Contact</h2>
     <p>
-    Email: zedex_editingz@gmail.com
+    Email: zedexeditingz@gmail.com
     </p>
 
     </body>
@@ -69,9 +72,8 @@ def privacy_policy():
     """
 
 
-# -----------------------------
-# User Data Deletion
-# -----------------------------
+
+
 @app.route("/data-deletion")
 def data_deletion():
     return """
@@ -97,7 +99,7 @@ def data_deletion():
     </p>
 
     <p>
-    Email: zedex_editingz@gmail.com
+    Email: zedexeditingz@gmail.com
     </p>
 
     </body>
@@ -105,9 +107,8 @@ def data_deletion():
     """
 
 
-# -----------------------------
-# Terms of Service
-# -----------------------------
+
+
 @app.route("/terms")
 def terms():
     return """
@@ -146,7 +147,7 @@ def terms():
 
     <h2>Contact</h2>
     <p>
-    Email: zedex_editingz@gmail.com
+    Email: zedexeditingz@gmail.com
     </p>
 
     </body>
@@ -154,12 +155,13 @@ def terms():
     """
 
 
+
+
 # -----------------------------
 # Meta Webhook Verification
 # -----------------------------
 @app.route("/webhook", methods=["GET"])
 def verify():
-
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
@@ -174,91 +176,175 @@ def verify():
 # Send Instagram Reply
 # -----------------------------
 def send_instagram_message(recipient_id, message_text):
-
     access_token = os.environ["INSTAGRAM_ACCESS_TOKEN"]
-
     url = "https://graph.instagram.com/v23.0/me/messages"
 
-    payload = {
-        "recipient": {
-            "id": recipient_id
-        },
-        "message": {
-            "text": message_text
-        }
-    }
+    # Instagram allows a maximum of 1000 characters per message.
+    message_text = str(message_text or "").strip()
+    if not message_text:
+        message_text = "Sorry, I couldn't generate a response."
+
+    chunks = [
+        message_text[i:i + 1000]
+        for i in range(0, len(message_text), 1000)
+    ]
 
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json"
     }
 
-    response = requests.post(
-        url,
-        json=payload,
-        headers=headers
+    for chunk in chunks:
+        payload = {
+            "recipient": {
+                "id": recipient_id
+            },
+            "message": {
+                "text": chunk
+            }
+        }
+
+        try:
+            response = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=15
+            )
+            print("Instagram Reply:", response.text)
+
+            if not response.ok:
+                print(
+                    f"Instagram API error: HTTP {response.status_code}"
+                )
+
+        except requests.RequestException as e:
+            print("Instagram request error:", e)
+
+
+# -----------------------------
+# AI Helpers
+# -----------------------------
+def ask_groq(user_message, edubot_mode=False):
+    if edubot_mode:
+        system_prompt = (
+            "You are EduBot, an AI homework tutor. "
+            "Explain answers step by step using simple language."
+        )
+        model = "llama-3.3-70b-versatile"
+    else:
+        system_prompt = (
+            "You are a friendly AI assistant having a normal conversation. "
+            "Answer naturally and clearly. Do not behave as a homework tutor "
+            "unless the user explicitly starts the message with 'EduBot /'."
+        )
+        model = "llama-3.3-70b-versatile"
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": user_message
+            }
+        ],
+        temperature=0.5,
+        max_tokens=800
     )
 
-    print("Instagram Reply:", response.text)
-    # -----------------------------
+    return response.choices[0].message.content
+
+
+def process_instagram_message(sender_id, user_message):
+    try:
+        original_message = user_message.strip()
+
+        # Only "EduBot / question" activates the homework tutor.
+        lower_message = original_message.lower()
+
+        if lower_message.startswith("edubot /"):
+            question = original_message[len("edubot /"):].strip()
+
+            if not question:
+                reply = "Please write your question after EduBot /"
+            else:
+                reply = ask_groq(question, edubot_mode=True)
+
+        else:
+            # Anything without "EduBot /" is normal conversation.
+            reply = ask_groq(original_message, edubot_mode=False)
+
+        send_instagram_message(sender_id, reply)
+
+    except Exception as e:
+        print("BACKGROUND MESSAGE ERROR:", repr(e))
+
+        # Try to tell the user instead of leaving the conversation silent.
+        try:
+            send_instagram_message(
+                sender_id,
+                "Sorry, I couldn't process that right now. Please try again."
+            )
+        except Exception as send_error:
+            print("ERROR SENDING ERROR MESSAGE:", repr(send_error))
+
+
+# -----------------------------
 # Receive Instagram Messages
 # -----------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
-
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
 
         print("========== WEBHOOK RECEIVED ==========")
         print(data)
         print("======================================")
 
-        entry = data["entry"][0]
-        messaging = entry["messaging"][0]
+        entry = data.get("entry", [])
+        if not entry:
+            return "EVENT_RECEIVED", 200
 
-        sender_id = messaging["sender"]["id"]
+        messaging = entry[0].get("messaging", [])
+        if not messaging:
+            return "EVENT_RECEIVED", 200
 
-        user_message = (
-            messaging
-            .get("message", {})
-            .get("text", "")
+        message_event = messaging[0]
+
+        # Ignore Instagram read events and other non-message events.
+        message = message_event.get("message", {})
+        if not message:
+            return "EVENT_RECEIVED", 200
+
+        # Ignore echo messages so EduBot doesn't answer its own messages.
+        if message.get("is_echo"):
+            return "EVENT_RECEIVED", 200
+
+        sender_id = message_event.get("sender", {}).get("id")
+        user_message = message.get("text", "").strip()
+
+        if not sender_id or not user_message:
+            return "EVENT_RECEIVED", 200
+
+        # Process AI work in the background.
+        # Instagram/Meta gets HTTP 200 immediately.
+        executor.submit(
+            process_instagram_message,
+            sender_id,
+            user_message
         )
-
-        if user_message:
-
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are EduBot, an AI homework tutor. "
-                            "Explain answers step by step using simple language."
-                        )
-                    },
-                    {
-                        "role": "user",
-                        "content": user_message
-                    }
-                ],
-                temperature=0.5,
-                max_tokens=800
-            )
-
-            ai_reply = response.choices[0].message.content
-
-            send_instagram_message(
-                sender_id,
-                ai_reply
-            )
 
         return "EVENT_RECEIVED", 200
 
-
     except Exception as e:
-        print("ERROR:", e)
-        return "ERROR", 500
-
+        print("WEBHOOK ERROR:", repr(e))
+        # Returning 200 helps prevent unnecessary webhook retries for
+        # malformed/non-message events.
+        return "EVENT_RECEIVED", 200
 
 
 # -----------------------------
@@ -266,53 +352,51 @@ def webhook():
 # -----------------------------
 @app.route("/ask", methods=["POST"])
 def ask():
-
     try:
+        data = request.get_json(silent=True) or {}
 
-        data = request.get_json()
-
-        if not data or "question" not in data:
+        if "question" not in data:
             return jsonify({
                 "error": "Question is required"
             }), 400
 
+        question = str(data["question"]).strip()
 
-        question = data["question"]
+        if not question:
+            return jsonify({
+                "error": "Question is required"
+            }), 400
 
+        # /ask follows the same prefix rule:
+        # "EduBot / question" = homework mode
+        # anything else = normal conversation.
+        lower_question = question.lower()
 
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are EduBot, an AI homework tutor. "
-                        "Explain answers step by step using simple language."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": question
-                }
-            ],
-            temperature=0.5,
-            max_tokens=800
-        )
+        if lower_question.startswith("edubot /"):
+            question_for_ai = question[len("edubot /"):].strip()
 
+            if not question_for_ai:
+                return jsonify({
+                    "success": False,
+                    "error": "Please write your question after EduBot /"
+                }), 400
+
+            answer = ask_groq(question_for_ai, edubot_mode=True)
+
+        else:
+            answer = ask_groq(question, edubot_mode=False)
 
         return jsonify({
             "success": True,
-            "answer": response.choices[0].message.content
+            "answer": answer
         })
 
-
     except Exception as e:
-
+        print("ASK ERROR:", repr(e))
         return jsonify({
             "success": False,
             "error": str(e)
         }), 500
-
 
 
 # -----------------------------
@@ -320,16 +404,13 @@ def ask():
 # -----------------------------
 @app.route("/auth/instagram/callback")
 def instagram_callback():
-
     return "Instagram login successful"
-
 
 
 # -----------------------------
 # Run Flask
 # -----------------------------
 if __name__ == "__main__":
-
     port = int(os.environ.get("PORT", 10000))
 
     app.run(
