@@ -2,6 +2,8 @@ import os
 import requests
 from flask import Flask, request, jsonify
 from openai import OpenAI
+from google import genai
+from google.genai import types
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
@@ -15,6 +17,13 @@ client = OpenAI(
     timeout=30.0,
     max_retries=2
 )
+
+# Gemini is the primary AI. Groq is used automatically as a fallback.
+# GEMINI_API_KEY is optional at startup; this keeps the app deployable
+# even if only Groq is configured.
+gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"]) if os.environ.get("GEMINI_API_KEY") else None
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 VERIFY_TOKEN = "edubot_verify"
 
@@ -225,23 +234,48 @@ def send_instagram_message(recipient_id, message_text):
 # -----------------------------
 # AI Helpers
 # -----------------------------
-def ask_groq(user_message, edubot_mode=False):
+def build_system_prompt(edubot_mode=False):
     if edubot_mode:
-        system_prompt = (
+        return (
             "You are EduBot, an AI homework tutor. "
-            "Explain answers step by step using simple language."
+            "Explain answers step by step using simple language. "
+            "Help the student understand the method, not just the final answer."
         )
-        model = "llama-3.3-70b-versatile"
-    else:
-        system_prompt = (
-            "You are a friendly AI assistant having a normal conversation. "
-            "Answer naturally and clearly. Do not behave as a homework tutor "
-            "unless the user explicitly starts the message with 'EduBot /'."
-        )
-        model = "llama-3.3-70b-versatile"
+    return (
+        "You are a friendly AI assistant having a normal conversation. "
+        "Answer naturally and clearly. Do not behave as a homework tutor "
+        "unless the user explicitly starts the message with 'EduBot /'."
+    )
+
+
+def ask_gemini(user_message, edubot_mode=False):
+    if not gemini_client:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+
+    system_prompt = build_system_prompt(edubot_mode)
+
+    response = gemini_client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=user_message,
+        config=types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            temperature=0.5,
+            max_output_tokens=800,
+        ),
+    )
+
+    answer = getattr(response, "text", None)
+    if not answer:
+        raise RuntimeError("Gemini returned an empty response")
+
+    return answer.strip()
+
+
+def ask_groq(user_message, edubot_mode=False):
+    system_prompt = build_system_prompt(edubot_mode)
 
     response = client.chat.completions.create(
-        model=model,
+        model=GROQ_MODEL,
         messages=[
             {
                 "role": "system",
@@ -256,7 +290,29 @@ def ask_groq(user_message, edubot_mode=False):
         max_tokens=800
     )
 
-    return response.choices[0].message.content
+    answer = response.choices[0].message.content
+    if not answer:
+        raise RuntimeError("Groq returned an empty response")
+
+    return answer.strip()
+
+
+def ask_ai(user_message, edubot_mode=False):
+    """
+    Primary: Gemini.
+    Fallback: Groq if Gemini is unavailable, rate-limited, errors,
+    or GEMINI_API_KEY is not configured.
+    """
+    try:
+        return ask_gemini(user_message, edubot_mode)
+    except Exception as gemini_error:
+        print("GEMINI ERROR - switching to Groq:", repr(gemini_error))
+
+        try:
+            return ask_groq(user_message, edubot_mode)
+        except Exception as groq_error:
+            print("GROQ FALLBACK ERROR:", repr(groq_error))
+            raise RuntimeError("Both Gemini and Groq are currently unavailable.")
 
 
 def process_instagram_message(sender_id, user_message):
@@ -272,11 +328,11 @@ def process_instagram_message(sender_id, user_message):
             if not question:
                 reply = "Please write your question after EduBot /"
             else:
-                reply = ask_groq(question, edubot_mode=True)
+                reply = ask_ai(question, edubot_mode=True)
 
         else:
             # Anything without "EduBot /" is normal conversation.
-            reply = ask_groq(original_message, edubot_mode=False)
+            reply = ask_ai(original_message, edubot_mode=False)
 
         send_instagram_message(sender_id, reply)
 
@@ -381,10 +437,10 @@ def ask():
                     "error": "Please write your question after EduBot /"
                 }), 400
 
-            answer = ask_groq(question_for_ai, edubot_mode=True)
+            answer = ask_ai(question_for_ai, edubot_mode=True)
 
         else:
-            answer = ask_groq(question, edubot_mode=False)
+            answer = ask_ai(question, edubot_mode=False)
 
         return jsonify({
             "success": True,
