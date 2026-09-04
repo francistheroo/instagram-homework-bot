@@ -1,4 +1,4 @@
-Flask
-gunicorn
+google-genai
 openai
+flask
 requests
