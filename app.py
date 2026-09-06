@@ -131,7 +131,7 @@ def get_conversation_history(user_id, limit=10):
 
 
 # -----------------------------
-# Output Cleaning Helper
+# Formatting & Sanitization Helpers
 # -----------------------------
 def sanitize_ai_output(text: str) -> str:
     """Removes token leakage like [ }{46], internal reasoning tags, or prompt markers."""
@@ -143,6 +143,46 @@ def sanitize_ai_output(text: str) -> str:
     return text.strip()
 
 
+def clean_markdown_for_instagram(text: str) -> str:
+    """Converts raw Markdown tables, headings, and bold syntax into clean plain text for Instagram DM."""
+    if not text:
+        return ""
+
+    # Convert Markdown Tables (| header |) into plain bullet points
+    lines = text.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Skip table divider rows like |---|---|
+        if re.match(r'^\|?\s*:?-+:?\s*(\|?\s*:?-+:?\s*)+\|?$', stripped):
+            continue
+        # Format table rows
+        if stripped.startswith('|') and stripped.endswith('|'):
+            cells = [c.strip() for c in stripped.split('|')[1:-1] if c.strip()]
+            if len(cells) >= 2:
+                cleaned_lines.append(f"• {cells[0]}: {cells[1]}")
+            elif len(cells) == 1:
+                cleaned_lines.append(f"• {cells[0]}")
+            continue
+        cleaned_lines.append(line)
+
+    text = '\n'.join(cleaned_lines)
+
+    # Convert headers (### Heading -> HEADING)
+    text = re.sub(r'#{1,6}\s*(.*)', r'\1', text)
+
+    # Strip bold and italic asterisks/underscores
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.*?)\*', r'\1', text)
+    text = re.sub(r'__(.*?)__', r'\1', text)
+    text = re.sub(r'_(.*?)_', r'\1', text)
+
+    # Clean multiple trailing blank lines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text.strip()
+
+
 # -----------------------------
 # AI Prompt & Generation
 # -----------------------------
@@ -150,13 +190,13 @@ def build_system_prompt(edubot_mode=False):
     if edubot_mode:
         return (
             "You are EduBot, an AI homework tutor. "
-            "Explain answers step by step using simple language. "
-            "Help the student understand the method, not just the final answer."
+            "Explain answers step by step using simple, clear plain text. "
+            "Do not use markdown tables. Help the student understand the method."
         )
     return (
         "You are a friendly AI assistant having a normal conversation. "
-        "Answer naturally and clearly. Do not behave as a homework tutor "
-        "unless the user explicitly starts the message with 'EduBot /'."
+        "Answer naturally and clearly in plain text. Do not use markdown tables or complex formatting. "
+        "Do not behave as a homework tutor unless the user starts the message with 'EduBot /'."
     )
 
 
@@ -323,7 +363,8 @@ def send_instagram_message(recipient_id, message_text):
     access_token = os.environ.get("INSTAGRAM_ACCESS_TOKEN", "")
     url = "https://graph.instagram.com/v23.0/me/messages"
 
-    message_text = str(message_text or "").strip()
+    # Clean formatting for Instagram DM output
+    message_text = clean_markdown_for_instagram(message_text)
     if not message_text:
         message_text = "Sorry, I couldn't generate a response."
 
