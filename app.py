@@ -1,4 +1,8 @@
 import os
+import os
+import glob
+import time
+from flask import Flask, send_from_directory, request, jsonify  # keep your existing imports
 import re
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -12,7 +16,20 @@ from gtts import gTTS
 import urllib.parse
 
 app = Flask(__name__)
+# Directory for ephemeral audio files
+AUDIO_DIR = os.path.join(os.getcwd(), "static", "audio")
+os.makedirs(AUDIO_DIR, exist_ok=True)
 
+def cleanup_old_audio(max_age_seconds=300):
+    """Deletes MP3 files older than max_age_seconds (default 5 mins)."""
+    now = time.time()
+    for file_path in glob.glob(os.path.join(AUDIO_DIR, "*.mp3")):
+        try:
+            if os.path.getmtime(file_path) < (now - max_age_seconds):
+                os.remove(file_path)
+                print(f"Cleaned up old audio: {file_path}")
+        except Exception as e:
+            print(f"Error deleting file {file_path}: {e}")
 # -----------------------------
 # Configuration
 # -----------------------------
@@ -468,6 +485,13 @@ def ask():
     except Exception as e:
         print("ASK ERROR:", repr(e))
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ---> STEP 3 GOES HERE <---
+@app.route('/static/audio/<filename>')
+def serve_audio(filename):
+    cleanup_old_audio(max_age_seconds=300)
+    return send_from_directory(AUDIO_DIR, filename)
 
 
 if __name__ == "__main__":
