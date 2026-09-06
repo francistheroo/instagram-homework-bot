@@ -56,6 +56,7 @@ def init_db():
                     user_id VARCHAR(255) NOT NULL,
                     role VARCHAR(50) NOT NULL,
                     content TEXT NOT NULL,
+                    is_image BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE INDEX IF NOT EXISTS idx_user_id_created 
@@ -77,9 +78,19 @@ def cleanup_old_messages(user_id):
         return
     try:
         with conn.cursor() as cur:
+            # 1-hour expiration for image interactions
             cur.execute("""
                 DELETE FROM messages 
                 WHERE user_id = %s 
+                AND is_image = TRUE 
+                AND created_at < NOW() - INTERVAL '1 hour';
+            """, (user_id,))
+            
+            # 24-hour expiration for standard text interactions
+            cur.execute("""
+                DELETE FROM messages 
+                WHERE user_id = %s 
+                AND is_image = FALSE 
                 AND created_at < NOW() - INTERVAL '24 hours';
             """, (user_id,))
             conn.commit()
@@ -89,7 +100,7 @@ def cleanup_old_messages(user_id):
         conn.close()
 
 
-def save_message(user_id, role, content):
+def save_message(user_id, role, content, is_image=False):
     conn = get_db_connection()
     if not conn:
         return
@@ -97,9 +108,9 @@ def save_message(user_id, role, content):
         cleanup_old_messages(user_id)
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO messages (user_id, role, content)
-                VALUES (%s, %s, %s);
-            """, (user_id, role, content))
+                INSERT INTO messages (user_id, role, content, is_image)
+                VALUES (%s, %s, %s, %s);
+            """, (user_id, role, content, is_image))
             conn.commit()
     except Exception as e:
         print("Save message error:", repr(e))
@@ -259,8 +270,9 @@ def ask_ai(user_id, user_message, edubot_mode=False, image_url=None):
             print("GROQ FALLBACK ERROR:", repr(groq_error))
             raise RuntimeError("Both Gemini and Groq are currently unavailable.")
 
-    save_message(user_id, "user", user_message or "[Sent an Image]")
-    save_message(user_id, "assistant", reply)
+    is_img = image_url is not None
+    save_message(user_id, "user", user_message or "[Sent an Image]", is_image=is_img)
+    save_message(user_id, "assistant", reply, is_image=is_img)
 
     return reply
 
