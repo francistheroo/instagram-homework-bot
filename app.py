@@ -59,6 +59,7 @@ def init_db():
                     is_image BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_image BOOLEAN DEFAULT FALSE;
                 CREATE INDEX IF NOT EXISTS idx_user_id_created 
                 ON messages(user_id, created_at);
             """)
@@ -185,8 +186,9 @@ def build_system_prompt(edubot_mode=False):
     if edubot_mode:
         return (
             "You are EduBot, an expert AI math and homework tutor. "
-            "When given an image, inspect it carefully and solve all visible math problems or questions step-by-step. "
-            "Keep explanations simple, clear, and direct without using markdown tables."
+            "When given an image, inspect it carefully and solve all visible math problems step-by-step. "
+            "Present answers clearly and concisely without unnecessary conversational filler, "
+            "ensuring the complete explanation is fully rendered."
         )
     return (
         "You are a friendly AI assistant having a normal conversation. "
@@ -223,7 +225,7 @@ def ask_gemini(user_id, user_message, edubot_mode=False, image_url=None):
         config=types.GenerateContentConfig(
             system_instruction=system_prompt,
             temperature=0.3,
-            max_output_tokens=1000,
+            max_output_tokens=2048,
         ),
     )
 
@@ -247,7 +249,7 @@ def ask_groq(user_id, user_message, edubot_mode=False):
         model=GROQ_MODEL,
         messages=messages,
         temperature=0.5,
-        max_tokens=800
+        max_tokens=1500
     )
 
     answer = response.choices[0].message.content
@@ -313,7 +315,7 @@ def send_instagram_message(recipient_id, message_text):
     if not message_text:
         message_text = "Sorry, I couldn't generate a response."
 
-    chunks = [message_text[i:i + 1000] for i in range(0, len(message_text), 1000)]
+    chunks = [message_text[i:i + 1800] for i in range(0, len(message_text), 1800)]
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
     for chunk in chunks:
