@@ -24,11 +24,13 @@ groq_client = OpenAI(
     max_retries=2
 )
 
-gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"]) if os.environ.get("GEMINI_API_KEY") else None
+gemini_key = os.environ.get("GEMINI_API_KEY")
+gemini_client = genai.Client(api_key=gemini_key) if gemini_key else None
+
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
-VERIFY_TOKEN = "edubot_verify"
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "edubot_verify")
 executor = ThreadPoolExecutor(max_workers=4)
 
 
@@ -171,9 +173,9 @@ def clean_markdown_for_instagram(text: str) -> str:
 def build_system_prompt(edubot_mode=False):
     if edubot_mode:
         return (
-            "You are EduBot, an AI homework tutor. "
-            "Explain answers step by step clearly and simply. "
-            "Do not use markdown tables."
+            "You are EduBot, an expert AI math and homework tutor. "
+            "When given an image, inspect it carefully and solve all visible math problems or questions step-by-step. "
+            "Keep explanations simple, clear, and direct without using markdown tables."
         )
     return (
         "You are a friendly AI assistant having a normal conversation. "
@@ -191,8 +193,9 @@ def ask_gemini(user_id, user_message, edubot_mode=False, image_url=None):
     if image_url:
         img_data = requests.get(image_url).content
         parts.append(types.Part.from_bytes(data=img_data, mime_type="image/jpeg"))
-    
-    parts.append(types.Part.from_text(text=user_message or "Analyze this image and explain in detail."))
+        
+    prompt_text = user_message or "Solve all the math problems shown in this image step-by-step."
+    parts.append(types.Part.from_text(text=prompt_text))
 
     contents = []
     if not image_url:
@@ -208,8 +211,8 @@ def ask_gemini(user_id, user_message, edubot_mode=False, image_url=None):
         contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=system_prompt,
-            temperature=0.5,
-            max_output_tokens=800,
+            temperature=0.3,
+            max_output_tokens=1000,
         ),
     )
 
@@ -323,7 +326,8 @@ def process_instagram_message(sender_id, user_message, image_url=None):
 
         # 2. Vision Mode (Received an Image Attachment)
         if image_url:
-            reply = ask_ai(sender_id, original_message, edubot_mode=True, image_url=image_url)
+            prompt = original_message if original_message else "Solve all the math problems shown in this image step-by-step."
+            reply = ask_ai(sender_id, prompt, edubot_mode=True, image_url=image_url)
             send_instagram_message(sender_id, reply)
             return
 
@@ -334,7 +338,7 @@ def process_instagram_message(sender_id, user_message, image_url=None):
             send_instagram_message(sender_id, reply)
             return
 
-        # 4. Standard Chat Mode
+        # 4. Standard Text Chat Mode
         reply = ask_ai(sender_id, original_message, edubot_mode=False)
         send_instagram_message(sender_id, reply)
 
@@ -402,7 +406,6 @@ def webhook():
         sender_id = message_event.get("sender", {}).get("id")
         user_message = message.get("text", "").strip()
 
-        # Check for image attachments sent by user
         image_url = None
         attachments = message.get("attachments", [])
         if attachments and attachments[0].get("type") == "image":
