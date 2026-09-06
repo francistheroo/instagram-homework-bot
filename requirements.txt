@@ -4,4 +4,3 @@ openai
 google-genai
 gunicorn
 psycopg2-binary
-gTTS
