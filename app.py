@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import requests
@@ -155,6 +156,14 @@ def sanitize_ai_output(text: str) -> str:
 def clean_markdown_for_instagram(text: str) -> str:
     if not text:
         return ""
+    
+    # Strip LaTeX formatting (\mathbf, \text, dollar signs, backslashes)
+    text = re.sub(r'\\mathbf\{([^}]+)\}', r'\1', text)
+    text = re.sub(r'\\text\{([^}]+)\}', r'\1', text)
+    text = re.sub(r'\\([a-zA-Z]+)', r'', text)
+    text = re.sub(r'\$+', '', text)
+    text = re.sub(r'[\{\}]', '', text)
+    
     lines = text.split('\n')
     cleaned_lines = []
     for line in lines:
@@ -187,12 +196,13 @@ def build_system_prompt(edubot_mode=False):
         return (
             "You are EduBot, an expert AI math and homework tutor. "
             "When given an image, inspect it carefully and solve all visible math problems step-by-step. "
-            "Present answers clearly and concisely without unnecessary conversational filler, "
-            "ensuring the complete explanation is fully rendered."
+            "IMPORTANT: Do NOT use LaTeX, backslashes, or math symbols like $, \\mathbf, \\frac. "
+            "Write simple, direct plain text equations (e.g., 71 + 14 = 85). "
+            "Keep answers concise without long filler explanations."
         )
     return (
         "You are a friendly AI assistant having a normal conversation. "
-        "Answer naturally and clearly in plain text."
+        "Answer naturally and clearly in plain text without LaTeX or markdown math symbols."
     )
 
 
@@ -207,7 +217,7 @@ def ask_gemini(user_id, user_message, edubot_mode=False, image_url=None):
         img_data = requests.get(image_url).content
         parts.append(types.Part.from_bytes(data=img_data, mime_type="image/jpeg"))
         
-    prompt_text = user_message or "Solve all the math problems shown in this image step-by-step."
+    prompt_text = user_message or "Solve all the math problems shown in this image step-by-step using plain text."
     parts.append(types.Part.from_text(text=prompt_text))
 
     contents = []
@@ -322,6 +332,7 @@ def send_instagram_message(recipient_id, message_text):
         payload = {"recipient": {"id": recipient_id}, "message": {"text": chunk}}
         try:
             requests.post(url, json=payload, headers=headers, timeout=15)
+            time.sleep(1)  # 1-second delay between sequential message chunks
         except requests.RequestException as e:
             print("Instagram request error:", e)
 
