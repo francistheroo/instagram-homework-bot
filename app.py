@@ -1,35 +1,17 @@
 import os
-import os
-import glob
-import time
-from flask import Flask, send_from_directory, request, jsonify  # keep your existing imports
 import re
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import requests
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify
 from openai import OpenAI
 from google import genai
 from google.genai import types
 from concurrent.futures import ThreadPoolExecutor
-from gtts import gTTS
 import urllib.parse
 
 app = Flask(__name__)
-# Directory for ephemeral audio files
-AUDIO_DIR = os.path.join(os.getcwd(), "static", "audio")
-os.makedirs(AUDIO_DIR, exist_ok=True)
 
-def cleanup_old_audio(max_age_seconds=300):
-    """Deletes MP3 files older than max_age_seconds (default 5 mins)."""
-    now = time.time()
-    for file_path in glob.glob(os.path.join(AUDIO_DIR, "*.mp3")):
-        try:
-            if os.path.getmtime(file_path) < (now - max_age_seconds):
-                os.remove(file_path)
-                print(f"Cleaned up old audio: {file_path}")
-        except Exception as e:
-            print(f"Error deleting file {file_path}: {e}")
 # -----------------------------
 # Configuration
 # -----------------------------
@@ -48,9 +30,6 @@ GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 VERIFY_TOKEN = "edubot_verify"
 executor = ThreadPoolExecutor(max_workers=4)
-
-AUDIO_DIR = os.path.join(app.root_path, 'static', 'audio')
-os.makedirs(AUDIO_DIR, exist_ok=True)
 
 
 # -----------------------------
@@ -284,21 +263,11 @@ def ask_ai(user_id, user_message, edubot_mode=False, image_url=None):
 
 
 # -----------------------------
-# Image & Voice Helpers
+# Image Generation Helper
 # -----------------------------
 def generate_image_url(prompt):
     encoded_prompt = urllib.parse.quote(prompt.strip())
     return f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true"
-
-
-def text_to_speech_file(text, user_id):
-    filename = f"speech_{user_id}.mp3"
-    filepath = os.path.join(AUDIO_DIR, filename)
-    tts = gTTS(text=text[:300], lang='en', slow=False)
-    tts.save(filepath)
-    
-    render_url = os.environ.get("RENDER_EXTERNAL_URL", request.host_url.rstrip('/'))
-    return f"{render_url}/static/audio/{filename}"
 
 
 # -----------------------------
@@ -352,29 +321,20 @@ def process_instagram_message(sender_id, user_message, image_url=None):
             send_instagram_media(sender_id, "image", gen_url)
             return
 
-        # 2. Voice Request Command
-        if lower_message.startswith("voice /"):
-            prompt = original_message[len("voice /"):].strip()
-            text_reply = ask_ai(sender_id, prompt, edubot_mode=False)
-            audio_url = text_to_speech_file(text_reply, sender_id)
-            send_instagram_message(sender_id, text_reply)
-            send_instagram_media(sender_id, "audio", audio_url)
-            return
-
-        # 3. Vision Mode (Received an Image Attachment)
+        # 2. Vision Mode (Received an Image Attachment)
         if image_url:
             reply = ask_ai(sender_id, original_message, edubot_mode=True, image_url=image_url)
             send_instagram_message(sender_id, reply)
             return
 
-        # 4. EduBot Homework Mode
+        # 3. EduBot Homework Mode
         if lower_message.startswith("edubot /"):
             question = original_message[len("edubot /"):].strip()
             reply = "Please write your question after EduBot /" if not question else ask_ai(sender_id, question, edubot_mode=True)
             send_instagram_message(sender_id, reply)
             return
 
-        # 5. Standard Chat Mode
+        # 4. Standard Chat Mode
         reply = ask_ai(sender_id, original_message, edubot_mode=False)
         send_instagram_message(sender_id, reply)
 
@@ -389,11 +349,6 @@ def process_instagram_message(sender_id, user_message, image_url=None):
 @app.route("/")
 def home():
     return "EduBot Multimodal AI is running successfully!"
-
-
-@app.route('/static/audio/<filename>')
-def serve_audio(filename):
-    return send_from_directory(AUDIO_DIR, filename)
 
 
 @app.route("/privacy-policy")
@@ -485,13 +440,6 @@ def ask():
     except Exception as e:
         print("ASK ERROR:", repr(e))
         return jsonify({"success": False, "error": str(e)}), 500
-
-
-# ---> STEP 3 GOES HERE <---
-@app.route('/static/audio/<filename>')
-def serve_audio(filename):
-    cleanup_old_audio(max_age_seconds=300)
-    return send_from_directory(AUDIO_DIR, filename)
 
 
 if __name__ == "__main__":
