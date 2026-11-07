@@ -222,7 +222,7 @@ def ask_gemini(user_id, user_message, edubot_mode=False, image_url=None):
         img_data = requests.get(image_url).content
         parts.append(types.Part.from_bytes(data=img_data, mime_type="image/jpeg"))
         
-    prompt_text = user_message or "Solve all the math problems shown in this image step-by-step using plain text."
+    prompt_text = user_message or "Please describe this image and tell me what is visible."
     parts.append(types.Part.from_text(text=prompt_text))
 
     contents = []
