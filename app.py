@@ -192,17 +192,22 @@ def clean_markdown_for_instagram(text: str) -> str:
 # AI Prompt & Multimodal Logic
 # -----------------------------
 def build_system_prompt(edubot_mode=False):
-    if edubot_mode:
-        return (
-            "You are EduBot, an expert AI math and homework tutor. "
-            "When given an image, inspect it carefully and solve all visible math problems step-by-step. "
-            "IMPORTANT: Do NOT use LaTeX, backslashes, or math symbols like $, \\mathbf, \\frac. "
-            "Write simple, direct plain text equations (e.g., 71 + 14 = 85). "
-            "Keep answers concise without long filler explanations."
-        )
     return (
-        "You are a friendly AI assistant having a normal conversation. "
-        "Answer naturally and clearly in plain text without LaTeX or markdown math symbols."
+        "You are NOVA, a friendly, capable, general-purpose AI assistant designed to help with ALL subjects and everyday conversations. "
+        "NOVA is your only name. Never call yourself EduBot or give NOVA a full form. "
+        "Help with every school subject and level when appropriate, including mathematics, science, languages, history, geography, "
+        "technology, coding, arts, and general knowledge, as well as cooking, creativity, writing, translation, and everyday questions. "
+        "Do not assume every message is homework. Understand the actual request and answer that topic directly. "
+        "LANGUAGE: Match the language and writing style of the user's latest message. "
+        "If the user writes in English, reply in English. If they write in Malayalam script, reply in Malayalam script. "
+        "If they write Malayalam using English/Roman letters (Manglish), reply in Manglish. "
+        "If they mix languages, respond in a similar natural mix. Do not force a different language or script. "
+        "For unclear requests, ask one brief clarifying question in the user's language. "
+        "For images, inspect the image and answer the user's actual question about its contents; do not assume it contains mathematics. "
+        "If an image arrives without a question, briefly describe what is visible and ask what help is needed. "
+        "For homework, explain clearly and show useful steps instead of only giving an unexplained answer. "
+        "Be accurate, friendly, and concise. Admit uncertainty and never invent facts. "
+        "Use clear plain text suitable for Instagram messages. Avoid LaTeX, backslashes, and excessive markdown."
     )
 
 
@@ -351,15 +356,15 @@ def process_instagram_message(sender_id, user_message, image_url=None):
 
         # 2. Vision Mode (Received an Image Attachment)
         if image_url:
-            prompt = original_message if original_message else "Solve all the math problems shown in this image step-by-step."
+            prompt = original_message if original_message else "Please describe this image and tell me what is visible."
             reply = ask_ai(sender_id, prompt, edubot_mode=True, image_url=image_url)
             send_instagram_message(sender_id, reply)
             return
 
         # 3. EduBot Homework Mode
-        if lower_message.startswith("edubot /"):
-            question = original_message[len("edubot /"):].strip()
-            reply = "Please write your question after EduBot /" if not question else ask_ai(sender_id, question, edubot_mode=True)
+        if lower_message.startswith("nova /") or lower_message.startswith("edubot /"):
+            question = original_message.split("/", 1)[1].strip()
+            reply = "Please write your question after NOVA /" if not question else ask_ai(sender_id, question, edubot_mode=True)
             send_instagram_message(sender_id, reply)
             return
 
@@ -377,12 +382,12 @@ def process_instagram_message(sender_id, user_message, image_url=None):
 # -----------------------------
 @app.route("/")
 def home():
-    return "EduBot Multimodal AI is running successfully!"
+    return "NOVA Multimodal AI is running successfully!"
 
 
 @app.route("/privacy-policy")
 def privacy_policy():
-    return "<h1>EduBot Privacy Policy</h1><p>EduBot uses messaging data only to provide AI homework support.</p>"
+    return "<h1>NOVA Privacy Policy</h1><p>NOVA uses messaging data to provide AI assistance across subjects and general conversations.</p>"
 
 
 @app.route("/data-deletion")
@@ -456,10 +461,10 @@ def ask():
             return jsonify({"error": "Question is required"}), 400
 
         lower_question = question.lower()
-        if lower_question.startswith("edubot /"):
-            question_for_ai = question[len("edubot /"):].strip()
+        if lower_question.startswith("nova /") or lower_question.startswith("edubot /"):
+            question_for_ai = question.split("/", 1)[1].strip()
             if not question_for_ai:
-                return jsonify({"success": False, "error": "Please write your question after EduBot /"}), 400
+                return jsonify({"success": False, "error": "Please write your question after NOVA /"}), 400
             answer = ask_ai(user_id, question_for_ai, edubot_mode=True)
         else:
             answer = ask_ai(user_id, question, edubot_mode=False)
