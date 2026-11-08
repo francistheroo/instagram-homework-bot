@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import hashlib
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import requests
@@ -91,7 +92,7 @@ init_db()
 
 
 def claim_webhook_event(event_id):
-    """Atomically claim a Meta message/event ID so webhook retries cannot reply twice."""
+    """Atomically claim a Meta message/event key so webhook retries cannot reply twice."""
     if not event_id:
         return True
 
@@ -265,6 +266,7 @@ def build_system_prompt(edubot_mode=False):
         "Understand short follow-up messages such as 'yes', 'no', 'para', 'that one', colours, names, and corrections using the recent conversation. "
         "Do not treat each message as an unrelated new conversation, repeat introductions, or ask the user to repeat details already provided. "
         "Respond directly to the latest message while keeping relevant earlier context. Never ignore a message just because it is short or incomplete; ask one brief follow-up only when the context truly cannot resolve it. "
+        "Keep replies natural and concise. Do not repeat the same greeting, conclusion, or point in different words. Explain each idea once; do not send three versions of the same answer unless the user asks for alternatives. "
         "When the user sends supported image, audio, video, or document attachments, inspect their contents when the model supports that format. "
         "For stickers, reactions, quick replies, shared posts, story replies, and button taps, use the event context naturally. "
         "If an attachment cannot be accessed or understood, say so briefly and ask for a resend in a supported format; never pretend to have viewed or heard it. "
@@ -613,8 +615,33 @@ def webhook():
                     or message_event.get("reaction", {}).get("mid")
                 )
 
+                # Some event types or payload variants may omit a message ID.
+                # Build a stable fallback from the sender, Meta timestamp and
+                # message payload so retries of that same delivery are deduped.
+                if not event_id:
+                    event_timestamp = message_event.get("timestamp")
+                    if event_timestamp is not None:
+                        attachment_signature = [
+                            (
+                                item.get("type"),
+                                (item.get("payload") or {}).get("url"),
+                            )
+                            for item in event_message.get("attachments", [])
+                        ]
+                        fallback_data = repr((
+                            sender_id,
+                            event_timestamp,
+                            event_message.get("text", ""),
+                            attachment_signature,
+                            message_event.get("postback", {}),
+                            message_event.get("reaction", {}),
+                        ))
+                        event_id = "fallback:" + hashlib.sha256(
+                            fallback_data.encode("utf-8")
+                        ).hexdigest()
+
                 # Meta can retry webhook deliveries. Only the first delivery
-                # of a given message ID should create an AI reply.
+                # of a given message/event key should create an AI reply.
                 if event_id and not claim_webhook_event(str(event_id)):
                     print("Duplicate Instagram webhook event ignored:", event_id)
                     continue
