@@ -9,6 +9,8 @@ from openai import OpenAI
 from google import genai
 from google.genai import types
 from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+import threading
 import urllib.parse
 
 app = Flask(__name__)
@@ -33,6 +35,12 @@ GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "edubot_verify")
 executor = ThreadPoolExecutor(max_workers=4)
+
+# Keep each person's messages in arrival order while allowing different people
+# to be handled concurrently.
+_message_queues = {}
+_active_senders = set()
+_message_queue_lock = threading.Lock()
 
 
 # -----------------------------
@@ -128,10 +136,15 @@ def get_conversation_history(user_id, limit=10):
         cleanup_old_messages(user_id)
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT role, content FROM messages
-                WHERE user_id = %s
-                ORDER BY created_at ASC
-                LIMIT %s;
+                SELECT role, content
+                FROM (
+                    SELECT id, role, content, created_at
+                    FROM messages
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT %s
+                ) AS recent_messages
+                ORDER BY created_at ASC, id ASC;
             """, (user_id, limit))
             return cur.fetchall()
     except Exception as e:
@@ -202,7 +215,10 @@ def build_system_prompt(edubot_mode=False):
         "If the user writes in English, reply in English. If they write in Malayalam script, reply in Malayalam script. "
         "If they write Malayalam using English/Roman letters (Manglish), reply in Manglish. "
         "If they mix languages, respond in a similar natural mix. Do not force a different language or script. "
-        "For unclear requests, ask one brief clarifying question in the user's language. "
+        "Treat the chat as one natural, continuous conversation, like a helpful person chatting normally. "
+        "Understand short follow-up messages such as 'yes', 'no', 'para', 'that one', colours, names, and corrections using the recent conversation. "
+        "Do not treat each message as an unrelated new conversation, repeat introductions, or ask the user to repeat details already provided. "
+        "Respond directly to the latest message while keeping relevant earlier context. Never ignore a message just because it is short or incomplete; ask one brief follow-up only when the context truly cannot resolve it. "
         "For images, inspect the image and answer the user's actual question about its contents; do not assume it contains mathematics. "
         "If an image arrives without a question, briefly describe what is visible and ask what help is needed. "
         "For homework, explain clearly and show useful steps instead of only giving an unexplained answer. "
@@ -226,11 +242,11 @@ def ask_gemini(user_id, user_message, edubot_mode=False, image_url=None):
     parts.append(types.Part.from_text(text=prompt_text))
 
     contents = []
-    if not image_url:
-        history = get_conversation_history(user_id)
-        for msg in history:
-            role = "user" if msg["role"] == "user" else "model"
-            contents.append(types.Content(role=role, parts=[types.Part.from_text(text=msg["content"])]))
+    # Keep the recent chat context for text and image messages alike.
+    history = get_conversation_history(user_id)
+    for msg in history:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append(types.Content(role=role, parts=[types.Part.from_text(text=msg["content"])]))
 
     contents.append(types.Content(role="user", parts=parts))
 
@@ -377,6 +393,30 @@ def process_instagram_message(sender_id, user_message, image_url=None):
         send_instagram_message(sender_id, "Sorry, I couldn't process that right now. Please try again.")
 
 
+def _process_sender_queue(sender_id):
+    """Process one sender's queued messages sequentially in arrival order."""
+    while True:
+        with _message_queue_lock:
+            queue = _message_queues.get(sender_id)
+            if not queue:
+                _message_queues.pop(sender_id, None)
+                _active_senders.discard(sender_id)
+                return
+            user_message, image_url = queue.popleft()
+
+        process_instagram_message(sender_id, user_message, image_url)
+
+
+def enqueue_instagram_message(sender_id, user_message, image_url=None):
+    """Queue messages per sender so short follow-ups cannot overtake earlier messages."""
+    with _message_queue_lock:
+        queue = _message_queues.setdefault(sender_id, deque())
+        queue.append((user_message, image_url))
+        if sender_id not in _active_senders:
+            _active_senders.add(sender_id)
+            executor.submit(_process_sender_queue, sender_id)
+
+
 # -----------------------------
 # Base & Legal Endpoints
 # -----------------------------
@@ -419,30 +459,28 @@ def verify():
 def webhook():
     try:
         data = request.get_json(silent=True) or {}
-        entry = data.get("entry", [])
-        if not entry:
-            return "EVENT_RECEIVED", 200
+        entries = data.get("entry", [])
+        # A webhook payload may contain multiple entries and multiple messages.
+        # Process every incoming message instead of silently taking only [0].
+        for entry in entries:
+            for message_event in entry.get("messaging", []):
+                message = message_event.get("message") or {}
 
-        messaging = entry[0].get("messaging", [])
-        if not messaging:
-            return "EVENT_RECEIVED", 200
+                if not message or message.get("is_echo"):
+                    continue
 
-        message_event = messaging[0]
-        message = message_event.get("message", {})
+                sender_id = message_event.get("sender", {}).get("id")
+                user_message = (message.get("text") or "").strip()
 
-        if not message or message.get("is_echo"):
-            return "EVENT_RECEIVED", 200
+                image_url = None
+                for attachment in message.get("attachments", []):
+                    if attachment.get("type") == "image":
+                        image_url = attachment.get("payload", {}).get("url")
+                        if image_url:
+                            break
 
-        sender_id = message_event.get("sender", {}).get("id")
-        user_message = message.get("text", "").strip()
-
-        image_url = None
-        attachments = message.get("attachments", [])
-        if attachments and attachments[0].get("type") == "image":
-            image_url = attachments[0].get("payload", {}).get("url")
-
-        if sender_id and (user_message or image_url):
-            executor.submit(process_instagram_message, sender_id, user_message, image_url)
+                if sender_id and (user_message or image_url):
+                    enqueue_instagram_message(sender_id, user_message, image_url)
 
         return "EVENT_RECEIVED", 200
     except Exception as e:
