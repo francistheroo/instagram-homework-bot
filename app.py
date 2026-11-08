@@ -219,6 +219,9 @@ def build_system_prompt(edubot_mode=False):
         "Understand short follow-up messages such as 'yes', 'no', 'para', 'that one', colours, names, and corrections using the recent conversation. "
         "Do not treat each message as an unrelated new conversation, repeat introductions, or ask the user to repeat details already provided. "
         "Respond directly to the latest message while keeping relevant earlier context. Never ignore a message just because it is short or incomplete; ask one brief follow-up only when the context truly cannot resolve it. "
+        "When the user sends supported image, audio, video, or document attachments, inspect their contents when the model supports that format. "
+        "For stickers, reactions, quick replies, shared posts, story replies, and button taps, use the event context naturally. "
+        "If an attachment cannot be accessed or understood, say so briefly and ask for a resend in a supported format; never pretend to have viewed or heard it. "
         "For images, inspect the image and answer the user's actual question about its contents; do not assume it contains mathematics. "
         "If an image arrives without a question, briefly describe what is visible and ask what help is needed. "
         "For homework, explain clearly and show useful steps instead of only giving an unexplained answer. "
@@ -227,18 +230,27 @@ def build_system_prompt(edubot_mode=False):
     )
 
 
-def ask_gemini(user_id, user_message, edubot_mode=False, image_url=None):
+def ask_gemini(user_id, user_message, edubot_mode=False, media_items=None):
     if not gemini_client:
         raise RuntimeError("GEMINI_API_KEY is not configured")
 
     system_prompt = build_system_prompt(edubot_mode)
     
     parts = []
-    if image_url:
-        img_data = requests.get(image_url).content
-        parts.append(types.Part.from_bytes(data=img_data, mime_type="image/jpeg"))
-        
-    prompt_text = user_message or "Please describe this image and tell me what is visible."
+    for media in media_items or []:
+        media_url = media.get("url")
+        if not media_url:
+            continue
+        media_response = requests.get(media_url, timeout=25)
+        media_response.raise_for_status()
+        mime_type = (
+            media_response.headers.get("Content-Type", "").split(";", 1)[0].strip()
+            or media.get("mime_type")
+            or "application/octet-stream"
+        )
+        parts.append(types.Part.from_bytes(data=media_response.content, mime_type=mime_type))
+
+    prompt_text = user_message or "Please inspect the attached content and respond helpfully."
     parts.append(types.Part.from_text(text=prompt_text))
 
     contents = []
@@ -290,22 +302,28 @@ def ask_groq(user_id, user_message, edubot_mode=False):
     return sanitize_ai_output(answer)
 
 
-def ask_ai(user_id, user_message, edubot_mode=False, image_url=None):
+def ask_ai(user_id, user_message, edubot_mode=False, media_items=None):
+    media_items = media_items or []
     try:
-        reply = ask_gemini(user_id, user_message, edubot_mode, image_url=image_url)
+        reply = ask_gemini(user_id, user_message, edubot_mode, media_items=media_items)
     except Exception as gemini_error:
         print("GEMINI ERROR - switching to Groq:", repr(gemini_error))
-        if image_url:
-            raise RuntimeError("Vision capability requires Gemini API.")
+        if media_items:
+            raise RuntimeError(
+                "I received your attachment, but couldn't read it right now. Please try again or send it in another supported format."
+            )
         try:
             reply = ask_groq(user_id, user_message, edubot_mode)
         except Exception as groq_error:
             print("GROQ FALLBACK ERROR:", repr(groq_error))
             raise RuntimeError("Both Gemini and Groq are currently unavailable.")
 
-    is_img = image_url is not None
-    save_message(user_id, "user", user_message or "[Sent an Image]", is_image=is_img)
-    save_message(user_id, "assistant", reply, is_image=is_img)
+    user_content = user_message or "[Sent an attachment]"
+    if media_items:
+        labels = ", ".join(item.get("label", item.get("type", "attachment")) for item in media_items)
+        user_content = (user_content + " " if user_message else "") + "[Attachments: " + labels + "]"
+    save_message(user_id, "user", user_content, is_image=bool(media_items))
+    save_message(user_id, "assistant", reply, is_image=bool(media_items))
 
     return reply
 
@@ -358,43 +376,42 @@ def send_instagram_message(recipient_id, message_text):
             print("Instagram request error:", e)
 
 
-def process_instagram_message(sender_id, user_message, image_url=None):
+def process_instagram_message(sender_id, user_message, media_items=None):
     try:
         original_message = (user_message or "").strip()
         lower_message = original_message.lower()
+        media_items = media_items or []
 
-        # 1. Image Generation Command
-        if lower_message.startswith("image /") or lower_message.startswith("generate image:"):
+        # Image generation remains an explicit user command.
+        if not media_items and (lower_message.startswith("image /") or lower_message.startswith("generate image:")):
             prompt = original_message.split('/', 1)[-1].strip() if '/' in original_message else original_message.split(':', 1)[-1].strip()
+            if not prompt:
+                send_instagram_message(sender_id, "What would you like me to create?")
+                return
             gen_url = generate_image_url(prompt)
             send_instagram_media(sender_id, "image", gen_url)
             return
 
-        # 2. Vision Mode (Received an Image Attachment)
-        if image_url:
-            prompt = original_message if original_message else "Please describe this image and tell me what is visible."
-            reply = ask_ai(sender_id, prompt, edubot_mode=True, image_url=image_url)
-            send_instagram_message(sender_id, reply)
+        # Keep NOVA as the only assistant identity; the prefix is optional.
+        if lower_message.startswith("nova /"):
+            original_message = original_message.split("/", 1)[1].strip()
+        elif lower_message.startswith("edubot /"):
+            original_message = original_message.split("/", 1)[1].strip()
+
+        if not original_message and not media_items:
+            send_instagram_message(sender_id, "I received your message. What would you like help with?")
             return
 
-        # 3. EduBot Homework Mode
-        if lower_message.startswith("nova /") or lower_message.startswith("edubot /"):
-            question = original_message.split("/", 1)[1].strip()
-            reply = "Please write your question after NOVA /" if not question else ask_ai(sender_id, question, edubot_mode=True)
-            send_instagram_message(sender_id, reply)
-            return
-
-        # 4. Standard Text Chat Mode
-        reply = ask_ai(sender_id, original_message, edubot_mode=False)
+        reply = ask_ai(sender_id, original_message, edubot_mode=False, media_items=media_items)
         send_instagram_message(sender_id, reply)
 
     except Exception as e:
         print("BACKGROUND MESSAGE ERROR:", repr(e))
-        send_instagram_message(sender_id, "Sorry, I couldn't process that right now. Please try again.")
+        send_instagram_message(sender_id, "Sorry, I couldn't process that message just now. Please try again.")
 
 
 def _process_sender_queue(sender_id):
-    """Process one sender's queued messages sequentially in arrival order."""
+    """Process one sender's queued events sequentially in arrival order."""
     while True:
         with _message_queue_lock:
             queue = _message_queues.get(sender_id)
@@ -402,19 +419,92 @@ def _process_sender_queue(sender_id):
                 _message_queues.pop(sender_id, None)
                 _active_senders.discard(sender_id)
                 return
-            user_message, image_url = queue.popleft()
+            user_message, media_items = queue.popleft()
 
-        process_instagram_message(sender_id, user_message, image_url)
+        process_instagram_message(sender_id, user_message, media_items)
 
 
-def enqueue_instagram_message(sender_id, user_message, image_url=None):
+def enqueue_instagram_message(sender_id, user_message, media_items=None):
     """Queue messages per sender so short follow-ups cannot overtake earlier messages."""
     with _message_queue_lock:
         queue = _message_queues.setdefault(sender_id, deque())
-        queue.append((user_message, image_url))
+        queue.append((user_message, media_items or []))
         if sender_id not in _active_senders:
             _active_senders.add(sender_id)
             executor.submit(_process_sender_queue, sender_id)
+
+
+def normalize_instagram_message(message_event):
+    """Convert common Instagram message formats into readable context plus media."""
+    message = message_event.get("message") or {}
+    text_parts = []
+    media_items = []
+
+    text_value = (message.get("text") or "").strip()
+    if text_value:
+        text_parts.append(text_value)
+
+    quick_reply = message.get("quick_reply") or {}
+    if quick_reply.get("payload"):
+        text_parts.append("[Quick reply: " + str(quick_reply["payload"]) + "]")
+
+    reply_to = message.get("reply_to") or {}
+    if reply_to.get("story"):
+        text_parts.append("[Reply to a story]")
+    elif reply_to.get("mid"):
+        text_parts.append("[Reply to an earlier message]")
+
+    for attachment in message.get("attachments", []):
+        attachment_type = str(attachment.get("type") or "attachment").lower()
+        payload = attachment.get("payload") or {}
+        media_url = payload.get("url")
+        label = attachment_type.replace("_", " ").title()
+
+        if attachment_type in ("image", "audio", "video", "file") and media_url:
+            media_items.append({
+                "url": media_url,
+                "type": attachment_type,
+                "label": label,
+            })
+            text_parts.append("[Attached " + label.lower() + "]")
+        elif attachment_type == "share":
+            text_parts.append("[Shared a post or link]")
+            if payload.get("url"):
+                text_parts.append(str(payload["url"]))
+        elif attachment_type in ("story_mention", "ig_reel"):
+            text_parts.append("[Shared " + label.lower() + "]")
+            if media_url:
+                media_items.append({"url": media_url, "type": attachment_type, "label": label})
+        else:
+            text_parts.append("[Received " + label.lower() + "; attachment details may not be readable]")
+
+    sticker_id = message.get("sticker_id")
+    if sticker_id:
+        text_parts.append("[Sent a sticker]")
+
+    if message.get("is_unsupported"):
+        text_parts.append("[Instagram marked this message as unsupported]")
+
+    return " ".join(part for part in text_parts if part).strip(), media_items
+
+
+def normalize_instagram_event(message_event):
+    """Normalize supported inbound message and postback event shapes."""
+    if message_event.get("message"):
+        return normalize_instagram_message(message_event)
+
+    postback = message_event.get("postback") or {}
+    if postback:
+        title = postback.get("title") or "Button"
+        payload = postback.get("payload") or ""
+        return "[Tapped Instagram button: " + str(title) + (", " + str(payload) if payload else "") + "]", []
+
+    reaction = message_event.get("reaction") or {}
+    if reaction:
+        emoji = reaction.get("emoji") or reaction.get("action") or "reaction"
+        return "[Reacted to a message: " + str(emoji) + "]", []
+
+    return "", []
 
 
 # -----------------------------
@@ -460,27 +550,19 @@ def webhook():
     try:
         data = request.get_json(silent=True) or {}
         entries = data.get("entry", [])
-        # A webhook payload may contain multiple entries and multiple messages.
-        # Process every incoming message instead of silently taking only [0].
+        # Process every entry and every inbound messaging event in the payload.
         for entry in entries:
             for message_event in entry.get("messaging", []):
-                message = message_event.get("message") or {}
-
-                if not message or message.get("is_echo"):
+                if message_event.get("message", {}).get("is_echo"):
                     continue
 
                 sender_id = message_event.get("sender", {}).get("id")
-                user_message = (message.get("text") or "").strip()
+                if not sender_id:
+                    continue
 
-                image_url = None
-                for attachment in message.get("attachments", []):
-                    if attachment.get("type") == "image":
-                        image_url = attachment.get("payload", {}).get("url")
-                        if image_url:
-                            break
-
-                if sender_id and (user_message or image_url):
-                    enqueue_instagram_message(sender_id, user_message, image_url)
+                user_message, media_items = normalize_instagram_event(message_event)
+                if user_message or media_items:
+                    enqueue_instagram_message(sender_id, user_message, media_items)
 
         return "EVENT_RECEIVED", 200
     except Exception as e:
