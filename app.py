@@ -41,6 +41,7 @@ executor = ThreadPoolExecutor(max_workers=4)
 _message_queues = {}
 _active_senders = set()
 _message_queue_lock = threading.Lock()
+_recent_webhook_events = set()
 
 
 # -----------------------------
@@ -69,8 +70,15 @@ def init_db():
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_image BOOLEAN DEFAULT FALSE;
-                CREATE INDEX IF NOT EXISTS idx_user_id_created 
+                CREATE INDEX IF NOT EXISTS idx_user_id_created
                 ON messages(user_id, created_at);
+
+                CREATE TABLE IF NOT EXISTS processed_webhook_events (
+                    event_id VARCHAR(512) PRIMARY KEY,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_processed_webhook_created
+                ON processed_webhook_events(created_at);
             """)
             conn.commit()
             print("Neon Database initialized successfully.")
@@ -80,6 +88,44 @@ def init_db():
         conn.close()
 
 init_db()
+
+
+def claim_webhook_event(event_id):
+    """Atomically claim a Meta message/event ID so webhook retries cannot reply twice."""
+    if not event_id:
+        return True
+
+    conn = get_db_connection()
+    if not conn:
+        # Without persistent storage, avoid duplicate work within this process.
+        with _message_queue_lock:
+            if event_id in _recent_webhook_events:
+                return False
+            _recent_webhook_events.add(event_id)
+            return True
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO processed_webhook_events (event_id)
+                VALUES (%s)
+                ON CONFLICT (event_id) DO NOTHING
+                RETURNING event_id;
+            """, (event_id,))
+            claimed = cur.fetchone() is not None
+            cur.execute("""
+                DELETE FROM processed_webhook_events
+                WHERE created_at < NOW() - INTERVAL '7 days';
+            """)
+            conn.commit()
+            return claimed
+    except Exception as e:
+        conn.rollback()
+        print("Webhook deduplication error:", repr(e))
+        # Fail closed: don't send a duplicate reply if deduplication storage fails.
+        return False
+    finally:
+        conn.close()
 
 
 def cleanup_old_messages(user_id):
@@ -558,6 +604,19 @@ def webhook():
 
                 sender_id = message_event.get("sender", {}).get("id")
                 if not sender_id:
+                    continue
+
+                event_message = message_event.get("message") or {}
+                event_id = (
+                    event_message.get("mid")
+                    or message_event.get("postback", {}).get("mid")
+                    or message_event.get("reaction", {}).get("mid")
+                )
+
+                # Meta can retry webhook deliveries. Only the first delivery
+                # of a given message ID should create an AI reply.
+                if event_id and not claim_webhook_event(str(event_id)):
+                    print("Duplicate Instagram webhook event ignored:", event_id)
                     continue
 
                 user_message, media_items = normalize_instagram_event(message_event)
